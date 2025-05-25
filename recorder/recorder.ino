@@ -13,35 +13,41 @@ File dataFile;
 bool recording = false;
 bool firstEntry = true;
 unsigned long lastSample = 0;
-int sampleInterval = 50; // Default 20 samples/sec (1000/20 = 50ms)
+const int sampleInterval = 100; // 100ms
 const float P0 = 1013.25; // Standard sea-level pressure in hPa
 String statusMessage = "";
 String currentFileName = "data.txt";
-int samplesPerSecond = 20; // Default value
 
 float pressureToAltitude(float pressure) {
   return 44330.77 * (1 - pow(pressure / P0, 0.190263));
 }
 
 void setup() {
+  Serial.begin(115200);
   if (!SPIFFS.begin(true)) {
+    Serial.println("SPIFFS mount failed");
     while (1);
   }
+  Serial.println("SPIFFS mounted successfully");
+
   Wire.begin(8, 9);
   WiFi.mode(WIFI_AP);
   WiFi.softAP(ssid, password);
   if (!bmp.begin(0x76)) {
+    Serial.println("BMP280 not found");
     while (1);
   }
+
   server.on("/", handleRoot);
   server.on("/start", handleStart);
   server.on("/stop", handleStop);
   server.on("/download", handleDownload);
   server.on("/delete", handleDelete);
   server.on("/setname", handleSetName);
-  server.on("/setsamples", handleSetSamples);
   server.on("/graph", handleGraph);
   server.begin();
+  Serial.print("AP IP: ");
+  Serial.println(WiFi.softAPIP());
 }
 
 void loop() {
@@ -57,6 +63,9 @@ void loop() {
       dataFile.println(json);
       firstEntry = false;
       dataFile.close();
+      Serial.println("Data written to " + filePath + ": " + json + (firstEntry ? " (first)" : ""));
+    } else {
+      Serial.println("Failed to open " + filePath + " for writing");
     }
     lastSample = millis();
   }
@@ -72,7 +81,7 @@ void handleRoot() {
   html += "p { font-size: 3.5vw; margin: 2vw 0; }";
   html += "form { margin: 3vw 0; }";
   html += "label { font-size: 4vw; }";
-  html += "input[type='text'], input[type='number'] { padding: 2vw; width: 50vw; max-width: 200px; border: 1px solid #ddd; border-radius: 4px; font-size: 3.5vw; }";
+  html += "input[type='text'] { padding: 2vw; width: 50vw; max-width: 200px; border: 1px solid #ddd; border-radius: 4px; font-size: 3.5vw; }";
   html += "input[type='submit'] { padding: 2vw 4vw; background: #3498db; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 3.5vw; }";
   html += "input[type='submit']:hover { background: #2980b9; }";
   html += "input[disabled] { background: #ccc; cursor: not-allowed; }";
@@ -90,7 +99,7 @@ void handleRoot() {
   html += "h1 { font-size: 6vw; }";
   html += "p, a, input, button, li { font-size: 4vw; }";
   html += "label { font-size: 4.5vw; }";
-  html += "input[type='text'], input[type='number'] { width: 70vw; }";
+  html += "input[type='text'] { width: 70vw; }";
   html += ".container { padding: 4vw; }";
   html += "}";
   html += "</style><script>";
@@ -111,13 +120,6 @@ void handleRoot() {
   html += "<input type='text' name='filename' value='" + currentFileName + "'";
   html += String(recording ? " disabled" : "") + String(">");
   html += "<input type='submit' value='Set Name'";
-  html += String(recording ? " disabled>" : ">");
-  html += "</form>";
-  html += "<form action='/setsamples' method='POST'>";
-  html += "<label>Samples per Second: </label>";
-  html += "<input type='number' name='samples' value='" + String(samplesPerSecond) + "' min='1'";
-  html += String(recording ? " disabled" : "") + String(">");
-  html += "<input type='submit' value='Set Samples'";
   html += String(recording ? " disabled>" : ">");
   html += "</form>";
   html += "<a href='/start'><button>Start Recording</button></a>";
@@ -159,28 +161,13 @@ void handleSetName() {
       if (!newName.endsWith(".txt")) newName += ".txt";
       currentFileName = newName;
       statusMessage = "File name set to " + currentFileName;
+      Serial.println("File name set to " + currentFileName);
     } else {
       statusMessage = "Invalid file name";
+      Serial.println("Invalid file name: " + newName);
     }
   } else {
     statusMessage = "Cannot change name while recording";
-  }
-  server.sendHeader("Location", "/");
-  server.send(302);
-}
-
-void handleSetSamples() {
-  if (!recording && server.hasArg("samples")) {
-    int newSamples = server.arg("samples").toInt();
-    if (newSamples > 0) {
-      samplesPerSecond = newSamples;
-      sampleInterval = 1000 / samplesPerSecond; // Convert to ms
-      statusMessage = "Samples per second set to " + String(samplesPerSecond);
-    } else {
-      statusMessage = "Invalid samples per second";
-    }
-  } else {
-    statusMessage = "Cannot change samples while recording";
   }
   server.sendHeader("Location", "/");
   server.send(302);
@@ -195,8 +182,10 @@ void handleStart() {
     dataFile.println("[");
     dataFile.close();
     statusMessage = "Recording started: " + currentFileName;
+    Serial.println("Started recording, cleared " + filePath);
   } else {
     statusMessage = "Failed to start recording";
+    Serial.println("Failed to create/clear " + filePath);
   }
   lastSample = millis();
   server.sendHeader("Location", "/");
@@ -217,8 +206,10 @@ void handleStop() {
     }
     dataFile.close();
     statusMessage = "Recording stopped: " + currentFileName;
+    Serial.println("Recording stopped: " + filePath);
   } else {
     statusMessage = "Failed to finalize recording";
+    Serial.println("Failed to open " + filePath + " for finalizing");
   }
   server.sendHeader("Location", "/");
   server.send(302);
@@ -235,13 +226,16 @@ void handleDownload() {
         server.sendHeader("Content-Disposition", "attachment; filename=" + fileName);
         server.streamFile(dataFile, "application/json");
         dataFile.close();
+        Serial.println("File " + filePath + " sent for download");
       } else {
         statusMessage = "Error opening file: " + fileName;
+        Serial.println("Failed to open " + filePath + " for reading");
         server.sendHeader("Location", "/");
         server.send(302);
       }
     } else {
       statusMessage = "File not found: " + fileName;
+      Serial.println("File " + filePath + " does not exist");
       server.sendHeader("Location", "/");
       server.send(302);
     }
@@ -260,14 +254,18 @@ void handleDelete() {
       if (SPIFFS.exists(filePath)) {
         if (SPIFFS.remove(filePath)) {
           statusMessage = "File deleted: " + fileName;
+          Serial.println("File " + filePath + " deleted");
         } else {
           statusMessage = "Failed to delete: " + fileName;
+          Serial.println("Failed to delete " + filePath);
         }
       } else {
         statusMessage = "File not found: " + fileName;
+        Serial.println("File " + filePath + " does not exist");
       }
     } else {
       statusMessage = "Cannot delete active recording: " + fileName;
+      Serial.println("Cannot delete active file " + filePath);
     }
   } else {
     statusMessage = "No file specified";
@@ -305,6 +303,7 @@ void handleGraph() {
         }
         dataFile.close();
         content.trim();
+        Serial.println("Raw content for " + filePath + ": [" + content + "]");
         if (content.length() > 2 && content.startsWith("[") && content.endsWith("]")) {
           html += "<canvas id='chart'></canvas>";
           html += "<script>";
@@ -328,14 +327,18 @@ void handleGraph() {
           html += "} else { document.write('<p>No valid altitude data found</p>'); }";
           html += "} else { document.write('<p>No data in file</p>'); }";
           html += "</script>";
+          Serial.println("Graph for " + filePath + ": " + String(content.length()) + " bytes parsed");
         } else {
           html += "<p>Invalid or empty JSON file: " + fileName + "</p>";
+          Serial.println("Invalid JSON in " + filePath + ": " + content);
         }
       } else {
         html += "<p>Error opening file: " + fileName + "</p>";
+        Serial.println("Failed to open " + filePath + " for graph");
       }
     } else {
       html += "<p>File not found: " + fileName + "</p>";
+      Serial.println("File " + filePath + " does not exist for graph");
     }
     html += "<p><a href='/'>Back to Home</a></p>";
     html += "</div></body></html>";
